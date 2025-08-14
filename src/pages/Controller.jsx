@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import MediapipeController from "./MediapipeController";
+import MobilenetController from "./MobilenetController";
 
 export default function Controller() {
   const [pressedKey, setPressedKey] = useState(null);
@@ -97,12 +98,15 @@ export default function Controller() {
   return (
     <div className="p-6 bg-white rounded-2xl md:shadow-lg border border-gray-200">
       <Tabs defaultValue="controller" className="w-[400px]">
-        <TabsList className="grid w-full grid-cols-2">
+        <TabsList className="grid w-full grid-cols-3">
           <TabsTrigger value="controller" className="cursor-pointer">
             Controller
           </TabsTrigger>
           <TabsTrigger value="mediapipe" className="cursor-pointer">
             Mediapipe
+          </TabsTrigger>
+          <TabsTrigger value="mobilenet" className="cursor-pointer">
+            MobileNetv2
           </TabsTrigger>
         </TabsList>
         <TabsContent value="controller">
@@ -178,6 +182,20 @@ export default function Controller() {
             </CardHeader>
             <CardContent>
               <MediapipeController />
+            </CardContent>
+          </Card>
+        </TabsContent>
+        <TabsContent value="mobilenet">
+          <Card>
+            <CardHeader>
+              <CardTitle>MobileNet Controller</CardTitle>
+              <CardDescription>
+                Control the car robot using hand gesture mobilenet v2 + SSD
+                model
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <MobilenetController />
             </CardContent>
           </Card>
         </TabsContent>

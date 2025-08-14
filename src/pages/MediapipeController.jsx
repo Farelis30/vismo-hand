@@ -11,9 +11,17 @@ export default function MediapipeController() {
   const [webcamRunning, setWebcamRunning] = useState(false);
   const [modelLoaded, setModelLoaded] = useState(false);
   const [lastDirection, setLastDirection] = useState("stop");
+  const [fingerStates, setFingerStates] = useState([
+    false,
+    false,
+    false,
+    false,
+    false,
+  ]);
+  const [currentGesture, setCurrentGesture] = useState("Tidak ada tangan");
   const requestAnimationRef = useRef(null);
 
-  const ipESP32 = "192.168.4.1";
+  const ipESP8266 = "192.168.4.1";
 
   // Inisialisasi model MediaPipe
   useEffect(() => {
@@ -30,7 +38,7 @@ export default function MediapipeController() {
               modelAssetPath: "/src/model/hand_landmarker.task",
               delegate: "CPU",
             },
-            numHands: 2,
+            numHands: 1,
             runningMode: "VIDEO",
           }
         );
@@ -56,11 +64,66 @@ export default function MediapipeController() {
     };
   }, []);
 
-  // Mengirim perintah ke ESP32
+  // Deteksi status jari terbuka/tutup
+  const getFingerStates = (landmarks) => {
+    // ====== 1) DETEKSI JEMPOL ======
+    // hitung jarak thumb_tip ke index_mcp vs thumb_ip ke index_mcp
+    const thumbTipX = landmarks[4].x;
+    const thumbIpX = landmarks[3].x;
+    const indexMcpX = landmarks[5].x;
+
+    // selisih jarak ke index_mcp
+    const tipDist = Math.abs(thumbTipX - indexMcpX);
+    const ipDist = Math.abs(thumbIpX - indexMcpX);
+
+    // jempol dianggap terbuka kalau tip lebih jauh dari telapak
+    const thumbOpen = tipDist > ipDist + 0.02; // margin supaya tidak terlalu sensitif
+
+    // ====== 2) DETEKSI JARI LAIN (VERTIKAL) ======
+    const fingerTips = [8, 12, 16, 20]; // telunjuk, tengah, manis, kelingking
+    const fingerMcp = [5, 9, 13, 17];
+    const fingersOpen = [];
+
+    for (let i = 0; i < fingerTips.length; i++) {
+      const tip = fingerTips[i];
+      const mcp = fingerMcp[i];
+      // jari terbuka jika tip lebih tinggi (y lebih kecil) dari mcp
+      fingersOpen.push(landmarks[tip].y < landmarks[mcp].y - 0.02);
+    }
+
+    return [thumbOpen, ...fingersOpen];
+  };
+
+  // Klasifikasi gesture 4 kelas: Maju, Stop, Kiri, Kanan
+  const classifyGesture = (states) => {
+    // Semua jari terbuka
+    if (states.every((state) => state)) {
+      return "maju";
+    }
+
+    // Semua tertutup
+    if (!states.some((state) => state)) {
+      return "stop";
+    }
+
+    // Hanya jempol terbuka
+    if (states[0] && !states.slice(1).some((state) => state)) {
+      return "kiri";
+    }
+
+    // Hanya kelingking terbuka
+    if (states[4] && !states.slice(0, 4).some((state) => state)) {
+      return "kanan";
+    }
+
+    return "stop"; // default untuk gesture tidak dikenal
+  };
+
+  // Mengirim perintah ke ESP8266
   const sendCommand = (command) => {
     if (command === lastDirection) return; // Mencegah pengiriman berulang
 
-    const url = `http://${ipESP32}/car/${command}`;
+    const url = `http://${ipESP8266}/car/${command}`;
     setLastDirection(command);
 
     fetch(url)
@@ -114,87 +177,9 @@ export default function MediapipeController() {
     }
 
     setWebcamRunning(false);
+    setCurrentGesture("Tidak ada tangan");
+    setFingerStates([false, false, false, false, false]);
     sendCommand("stop");
-  };
-
-  // Interpretasi hasil landmark tangan
-  const interpretHandGesture = (results) => {
-    if (!results || !results.landmarks || results.landmarks.length === 0) {
-      return "stop";
-    }
-
-    // Untuk dua tangan
-    if (results.landmarks.length === 2) {
-      // Dapatkan posisi Y tengah (tinggi) dari masing-masing tangan
-      const leftHandY = calculateHandCenterY(results.landmarks[0]);
-      const rightHandY = calculateHandCenterY(results.landmarks[1]);
-
-      // Tentukan tangan kiri dan kanan
-      let leftHand, rightHand;
-
-      // Penentuan tangan kiri dan kanan berdasarkan posisi X
-      if (results.landmarks[0][0].x < results.landmarks[1][0].x) {
-        leftHand = results.landmarks[0];
-        rightHand = results.landmarks[1];
-      } else {
-        leftHand = results.landmarks[1];
-        rightHand = results.landmarks[0];
-      }
-
-      // Jika tangan kanan lebih tinggi (nilai Y lebih kecil di canvas)
-      if (rightHandY < leftHandY - 0.1) {
-        return "kanan";
-      }
-
-      // Jika tangan kiri lebih tinggi
-      if (leftHandY < rightHandY - 0.1) {
-        return "kiri";
-      }
-
-      // Periksa jempol dan telunjuk untuk gerakan maju
-      // Jempol: landmark 4, Telunjuk: landmark 8
-      const thumbY = rightHand[4].y;
-      const indexFingerY = rightHand[8].y;
-
-      if (thumbY > indexFingerY + 0.1) {
-        return "maju";
-      }
-
-      // Periksa jempol dan telunjuk untuk gerakan mundur
-      // Jempol lebih tinggi dari telunjuk (Y lebih kecil)
-      if (thumbY < indexFingerY - 0.1) {
-        return "mundur";
-      }
-
-      // Jika tangan sejajar dan tidak ada gerakan khusus
-      return "stop";
-    } else {
-      // Jika hanya ada satu tangan, kita bisa menggunakan gerakan lain
-      const hand = results.landmarks[0];
-
-      // Jempol: landmark 4, Telunjuk: landmark 8
-      const thumbY = hand[4].y;
-      const indexFingerY = hand[8].y;
-
-      if (thumbY > indexFingerY + 0.1) {
-        return "maju";
-      }
-
-      if (thumbY < indexFingerY - 0.1) {
-        return "mundur";
-      }
-
-      return "stop";
-    }
-  };
-
-  // Hitung posisi Y tengah dari tangan
-  const calculateHandCenterY = (handLandmarks) => {
-    let sum = 0;
-    handLandmarks.forEach((landmark) => {
-      sum += landmark.y;
-    });
-    return sum / handLandmarks.length;
   };
 
   // Fungsi untuk prediksi dan rendering webcam
@@ -223,27 +208,66 @@ export default function MediapipeController() {
       // Gambar frame video ke canvas
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
+      let gestureText = "Tidak ada tangan";
+      let states = [false, false, false, false, false];
+
       // Gambar landmark jika ada tangan yang terdeteksi
-      if (results.landmarks) {
-        for (const landmarks of results.landmarks) {
-          drawConnectors(ctx, landmarks, HAND_CONNECTIONS, {
-            color: "#00FF00",
-            lineWidth: 5,
-          });
-          drawLandmarks(ctx, landmarks, { color: "#FF0000", lineWidth: 2 });
-        }
+      if (results.landmarks && results.landmarks.length > 0) {
+        const landmarks = results.landmarks[0];
 
-        // Interpretasi gerakan tangan
-        const command = interpretHandGesture(results);
-        sendCommand(command);
+        // Gambar landmark dan koneksi
+        drawConnectors(ctx, landmarks, HAND_CONNECTIONS, {
+          color: "#00FF00",
+          lineWidth: 3,
+        });
+        drawLandmarks(ctx, landmarks, { color: "#FF0000", radius: 4 });
 
-        // Tampilkan mode saat ini
-        ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
-        ctx.fillRect(0, 0, 150, 40);
-        ctx.fillStyle = "#FFFFFF";
-        ctx.font = "20px Arial";
-        ctx.fillText(`Mode: ${command}`, 10, 30);
+        // Deteksi status jari
+        states = getFingerStates(landmarks);
+        setFingerStates(states);
+
+        // Klasifikasi gesture
+        const gesture = classifyGesture(states);
+        const gestureNames = {
+          maju: "Maju",
+          stop: "Stop",
+          kiri: "Kiri",
+          kanan: "Kanan",
+        };
+        gestureText = `Prediksi: ${gestureNames[gesture] || "Tidak dikenal"}`;
+        setCurrentGesture(gestureText);
+
+        // Kirim command
+        sendCommand(gesture);
+
+        // Tampilkan status jari
+        const fingerNames = [
+          "Jempol",
+          "Telunjuk",
+          "Tengah",
+          "Manis",
+          "Kelingking",
+        ];
+        const stateText = fingerNames
+          .map((name, i) => `${name}: ${states[i] ? "Buka" : "Tutup"}`)
+          .join(", ");
+
+        // Background untuk teks
+        ctx.fillStyle = "rgba(0, 0, 0, 0.7)";
+        ctx.fillRect(10, canvas.height - 80, canvas.width - 20, 70);
+
+        // Teks status jari
+        ctx.fillStyle = "#00FF00";
+        ctx.font = "14px Arial";
+        ctx.fillText(stateText, 15, canvas.height - 50);
       }
+
+      // Tampilkan prediksi gesture
+      ctx.fillStyle = "rgba(0, 0, 0, 0.7)";
+      ctx.fillRect(10, 10, 300, 40);
+      ctx.fillStyle = "#FFFFFF";
+      ctx.font = "20px Arial";
+      ctx.fillText(gestureText, 15, 35);
     }
 
     requestAnimationRef.current = requestAnimationFrame(predictWebcam);
@@ -275,7 +299,7 @@ export default function MediapipeController() {
 
   // Fungsi untuk menggambar landmark
   const drawLandmarks = (ctx, landmarks, options) => {
-    const { color = "#FF0000", lineWidth = 1 } = options || {};
+    const { color = "#FF0000", radius = 2 } = options || {};
 
     ctx.fillStyle = color;
 
@@ -284,7 +308,7 @@ export default function MediapipeController() {
       ctx.arc(
         landmark.x * ctx.canvas.width,
         landmark.y * ctx.canvas.height,
-        lineWidth * 2,
+        radius,
         0,
         2 * Math.PI
       );
@@ -322,8 +346,8 @@ export default function MediapipeController() {
   ];
 
   return (
-    <div className="flex flex-col items-center">
-      <div className="relative w-full max-w-[640px] aspect-video bg-gray-100 rounded-md overflow-hidden">
+    <div className="flex flex-col items-center space-y-6">
+      <div className="relative w-full max-w-[640px] aspect-video bg-gray-100 rounded-lg overflow-hidden">
         <video
           ref={videoRef}
           className="absolute w-full h-full object-cover"
@@ -337,7 +361,7 @@ export default function MediapipeController() {
         />
 
         {!webcamRunning && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center">
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-gray-50">
             <Hand size={48} className="text-gray-400 mb-2" />
             <p className="text-gray-500 mb-4">
               {modelLoaded ? "Kamera tidak aktif" : "Memuat model..."}
@@ -354,7 +378,7 @@ export default function MediapipeController() {
         )}
       </div>
 
-      <div className="mt-4 flex gap-4">
+      <div className="flex gap-4">
         <Button
           onClick={startWebcam}
           disabled={webcamRunning || !modelLoaded}
@@ -376,16 +400,15 @@ export default function MediapipeController() {
         </Button>
       </div>
 
-      <div className="mt-6 bg-gray-100 p-4 rounded-md w-full">
-        <h3 className="font-semibold text-lg mb-2">Panduan Gerakan:</h3>
-        <ul className="list-disc pl-5 space-y-2">
-          <li>Tangan sejajar: Berhenti/idle</li>
-          <li>Tangan kanan lebih tinggi: Belok kanan</li>
-          <li>Tangan kiri lebih tinggi: Belok kiri</li>
-          <li>Jempol di bawah telunjuk: Maju</li>
-          <li>Jempol di atas telunjuk: Mundur</li>
-        </ul>
-      </div>
+      {/* Current Gesture Display */}
+      {webcamRunning && (
+        <div className="bg-blue-50 p-4 rounded-lg border border-blue-200 w-full max-w-md text-center">
+          <h3 className="font-semibold text-blue-800 mb-2">
+            Gesture Saat Ini:
+          </h3>
+          <p className="text-xl font-bold text-blue-600">{currentGesture}</p>
+        </div>
+      )}
     </div>
   );
 }
